@@ -1,23 +1,36 @@
 import logging
 from aiogram import Bot, Dispatcher, executor, types
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
 # ⚠️ BotFather'dan olgan tokeningizni shu yerga qo'ying
 API_TOKEN = 'BOT_TOKENINGIZNI_SHU_YERGA_YOZING'
 
+# ⚠️ Keyinchalik o'zingizning shaxsiy Telegram ID-ingizni shu yerga yozasiz (Masalan: ADMIN_ID = 12345678)
+ADMIN_ID = None  
+
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
 
-# 1. /start buyrug'i (Shaxsiy chatda xushmuomala kutib olish)
-@dp.message_handler(commands=['start'])
-async def send_welcome(message: types.Message):
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
+
+class OrderState(StatesGroup):
+    name = State()      
+    phone = State()     
+    address = State()   
+
+@dp.message_handler(commands=['start'], state="*")
+async def send_welcome(message: types.Message, state: FSMContext):
+    await state.finish() 
     if message.chat.type == 'private':
         welcome_text = (
             f"👋 Assalomu alaykum, hurmatli mijoz {message.from_user.first_name}!\n\n"
             "🧼 *Amin Gilam Yuvish* professional xizmati botiga xush kelibsiz!\n"
             "Siz bu yerda xizmatlarimiz bilan tanishishingiz va buyurtma berishingiz mumkin.\n\n"
             "📌 *Menyu buyruqlari:*\n"
-            "📦 /buyurtma — Tezkor buyurtma berish\n"
+            "📦 /buyurtma — Onlayn buyurtma berish\n"
             "📊 /narxlar — Narxlar va xizmatlar\n"
             "🧺 /parda — Parda yechib-ilib berish xizmati\n"
             "🎁 /aksiya — Chegirmalar va aksiyalar\n"
@@ -25,22 +38,86 @@ async def send_welcome(message: types.Message):
         )
         await message.reply(welcome_text, parse_mode="Markdown")
 
-# 2. Tezkor buyurtma berish
-@dp.message_handler(commands=['buyurtma'])
-async def send_order_info(message: types.Message):
-    order_text = (
-        "📦 *Tezkor buyurtma berish:*\n\n"
-        "Gilam, ko'rpa-to'shak yoki pardalaringizni yuvishga topshirish uchun hozirning o'zidayoq operatorimiz bilan bog'laning!\n\n"
-        "📞 *Telefon raqamlarimiz:*\n"
-        "☎️ (88) 263 63 63\n"
-        "☎️ (88) 577 63 63\n\n"
-        "🚚 Termiz shahri bo'ylab olib ketish va yetkazib berish *mutlaqo bepul!*"
+@dp.message_handler(commands=['buyurtma'], state="*")
+async def start_order(message: types.Message):
+    await OrderState.name.set()
+    await message.reply(
+        "📦 *Onlayn buyurtma berishni boshlaymiz.*\n\n"
+        "Iltimos, ismingizni kiriting:", 
+        parse_mode="Markdown",
+        reply_markup=types.ReplyKeyboardRemove()
     )
-    await message.reply(order_text, parse_mode="Markdown")
 
-# 3. Narxlar va xizmatlar (guruhda ham, shaxsiy chatda ham ishlaydi)
-@dp.message_handler(commands=['narxlar'])
-@dp.message_handler(lambda message: any(word in message.text.lower() for word in ['narx', 'narxi', 'qancha', 'necha pul', 'narxlar', 'adyol', 'ko\'rpa', 'mebel']))
+@dp.message_handler(state=OrderState.name)
+async def process_name(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['name'] = message.text
+    await OrderState.next()
+    
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    button = types.KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)
+    keyboard.add(button)
+    
+    await message.reply(
+        "Rahmat! Endi pastdagi tugmani bosish orqali yoki qo'lda *telefon raqamingizni* yuboring:", 
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+@dp.message_handler(content_types=types.ContentType.CONTACT, state=OrderState.phone)
+async def process_phone_contact(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['phone'] = message.contact.phone_number
+    await OrderState.next()
+    await message.reply(
+        "Ajoyib! Oxirgi bosqich: *Manzilingizni* yozib qoldiring (Masalan: Termiz sh., Navoiy ko'chasi, 12-uy):",
+        reply_markup=types.ReplyKeyboardRemove(),
+        parse_mode="Markdown"
+    )
+
+@dp.message_handler(state=OrderState.phone)
+async def process_phone_text(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['phone'] = message.text
+    await OrderState.next()
+    await message.reply(
+        "Ajoyib! Oxirgi bosqich: *Manzilingizni* yozib qoldiring (Masalan: Termiz sh., Navoiy ko'chasi, 12-uy):",
+        reply_markup=types.ReplyKeyboardRemove(),
+        parse_mode="Markdown"
+    )
+
+@dp.message_handler(state=OrderState.address)
+async def process_address(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['address'] = message.text
+        
+        client_text = (
+            "🎉 *Buyurtmangiz muvaffaqiyatli qabul qilindi!*\n\n"
+            "Tez orada operatorimiz siz bilan bog'lanadi. Rahmat!\n\n"
+            "📞 *Tezkor aloqa:* (88) 263 63 63"
+        )
+        await message.reply(client_text, parse_mode="Markdown")
+        
+        admin_text = (
+            "🔔 *YANGI BUYURTMA KELDI!*\n\n"
+            f"👤 *Mijoz:* {data['name']}\n"
+            f"📞 *Telefon:* {data['phone']}\n"
+            f"📍 *Manzil:* {data['address']}\n"
+            f"🆔 *Telegram Username:* @{message.from_user.username if message.from_user.username else 'Mavjud emas'}"
+        )
+        
+        if ADMIN_ID is not None:
+            try:
+                await bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode="Markdown")
+            except Exception as e:
+                logging.error(f"Adminga xabar yuborishda xatolik: {e}")
+        else:
+            logging.warning("ADMIN_ID kiritilmagan! Buyurtma hech kimga yuborilmadi.")
+
+    await state.finish()
+
+@dp.message_handler(commands=['narxlar'], state="*")
+@dp.message_handler(lambda message: any(word in message.text.lower() for word in ['narx', 'narxi', 'qancha', 'necha pul', 'narxlar', 'adyol', 'ko\'rpa', 'mebel']), state="*")
 async def send_prices(message: types.Message):
     price_text = (
         "🧼 *Amin Gilam Yuvish Xizmati Narxlari:*\n\n"
@@ -54,8 +131,7 @@ async def send_prices(message: types.Message):
     )
     await message.reply(price_text, parse_mode="Markdown")
 
-# 4. Parda yechib-ilib berish xizmati
-@dp.message_handler(commands=['parda'])
+@dp.message_handler(commands=['parda'], state="*")
 async def send_parda_info(message: types.Message):
     parda_text = (
         "🧺 *Parda yechib-ilib berish xizmati:*\n\n"
@@ -66,8 +142,7 @@ async def send_parda_info(message: types.Message):
     )
     await message.reply(parda_text, parse_mode="Markdown")
 
-# 5. Chegirmalar va aksiyalar (Hozircha aksiya yo'qligi haqida)
-@dp.message_handler(commands=['aksiya'])
+@dp.message_handler(commands=['aksiya'], state="*")
 async def send_promo(message: types.Message):
     promo_text = (
         "🎁 *Chegirmalar va Aksiyalar:*\n\n"
@@ -77,8 +152,7 @@ async def send_promo(message: types.Message):
     )
     await message.reply(promo_text, parse_mode="Markdown")
 
-# 6. Ijtimoiy tarmoqlar
-@dp.message_handler(commands=['ijtimoy'])
+@dp.message_handler(commands=['ijtimoy'], state="*")
 async def send_socials(message: types.Message):
     social_text = (
         "🌐 *Bizning ijtimoiy tarmoqlarimiz:*\n\n"
