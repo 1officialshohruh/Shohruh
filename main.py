@@ -5,7 +5,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
 # ⚠️ BotFather'dan olgan tokeningizni shu yerga qo'ying
-API_TOKEN = '9099509925:AAHOy4ILUyjr33tJl4JGBBtQU0rwbuV88rg'
+API_TOKEN = '9099509925:AAERv-PJljPeIcZOFqI577fxxMNZ9HOuVnY'
 
 # ⚠️ Keyinchalik o'zingizning shaxsiy Telegram ID-ingizni shu yerga yozasiz (Masalan: ADMIN_ID = 12345678)
 ADMIN_ID = None  
