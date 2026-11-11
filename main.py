@@ -1,29 +1,51 @@
 import logging
+import os
+import asyncio
+from threading import Thread
+from flask import Flask
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
-# ⚠️ BotFather'dan olgan tokeningizni shu yerga qo'ying
-API_TOKEN = '9099509925:AAERv-PJljPeIcZOFqI577fxxMNZ9HOuVnY'
+# ⚠️ 1. @BotFather dan olgan YANGI tokeningizni qo'shtirnoq ichiga yozing
+API_TOKEN = '9099509925:AAGPJRkvzUyI272DmQRbu-3MxeYV4q6-zfs'
 
-# ⚠️ Keyinchalik o'zingizning shaxsiy Telegram ID-ingizni shu yerga yozasiz (Masalan: ADMIN_ID = 12345678)
-ADMIN_ID = None  
+# ⚠️ 2. O'zingizning Telegram ID raqamingizni yozing (Masalan: ADMIN_ID = 123456789)
+ADMIN_ID = None
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
+# ==========================================================
+# BOTNI 24/7 UYG'OQ TUTIB TURUVCHI VEB-SERVER QISMI
+# ==========================================================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Amin Gilam Yuvish boti 24/7 faol ishlamoqda!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.daemon = True
+    t.start()
+# ==========================================================
+
 class OrderState(StatesGroup):
-    name = State()      
-    phone = State()     
-    address = State()   
+    name = State()
+    phone = State()
+    address = State()
 
 @dp.message_handler(commands=['start'], state="*")
 async def send_welcome(message: types.Message, state: FSMContext):
-    await state.finish() 
+    await state.finish()
     if message.chat.type == 'private':
         welcome_text = (
             f"👋 Assalomu alaykum, hurmatli mijoz {message.from_user.first_name}!\n\n"
@@ -43,23 +65,27 @@ async def start_order(message: types.Message):
     await OrderState.name.set()
     await message.reply(
         "📦 *Onlayn buyurtma berishni boshlaymiz.*\n\n"
-        "Iltimos, ismingizni kiriting:", 
+        "Iltimos, ismingizni kiriting:",
         parse_mode="Markdown",
         reply_markup=types.ReplyKeyboardRemove()
     )
 
 @dp.message_handler(state=OrderState.name)
 async def process_name(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.reply("Iltimos, ismingizni matn ko'rinishida yozing:")
+        return
+
     async with state.proxy() as data:
         data['name'] = message.text
     await OrderState.next()
-    
+
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     button = types.KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)
     keyboard.add(button)
-    
+
     await message.reply(
-        "Rahmat! Endi pastdagi tugmani bosish orqali yoki qo'lda *telefon raqamingizni* yuboring:", 
+        "Rahmat! Endi pastdagi tugmani bosish orqali yoki qo'lda *telefon raqamingizni* yuboring:",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
@@ -77,6 +103,10 @@ async def process_phone_contact(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=OrderState.phone)
 async def process_phone_text(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.reply("Iltimos, telefon raqamingizni yozing yoki pastdagi tugmani bosing:")
+        return
+
     async with state.proxy() as data:
         data['phone'] = message.text
     await OrderState.next()
@@ -88,16 +118,20 @@ async def process_phone_text(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=OrderState.address)
 async def process_address(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.reply("Iltimos, manzilingizni matn ko'rinishida yozib qoldiring:")
+        return
+
     async with state.proxy() as data:
         data['address'] = message.text
-        
+
         client_text = (
             "🎉 *Buyurtmangiz muvaffaqiyatli qabul qilindi!*\n\n"
-            "Tez ora-da operatorimiz siz bilan bog'lanadi. Rahmat!\n\n"
+            "Tez orada operatorimiz siz bilan bog'lanadi. Rahmat!\n\n"
             "📞 *Tezkor aloqa:* (88) 263 63 63"
         )
         await message.reply(client_text, parse_mode="Markdown")
-        
+
         admin_text = (
             "🔔 *YANGI BUYURTMA KELDI!*\n\n"
             f"👤 *Mijoz:* {data['name']}\n"
@@ -105,7 +139,7 @@ async def process_address(message: types.Message, state: FSMContext):
             f"📍 *Manzil:* {data['address']}\n"
             f"🆔 *Telegram Username:* @{message.from_user.username if message.from_user.username else 'Mavjud emas'}"
         )
-        
+
         if ADMIN_ID is not None:
             try:
                 await bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode="Markdown")
@@ -117,7 +151,7 @@ async def process_address(message: types.Message, state: FSMContext):
     await state.finish()
 
 @dp.message_handler(commands=['narxlar'], state="*")
-@dp.message_handler(lambda message: any(word in message.text.lower() for word in ['narx', 'narxi', 'qancha', 'necha pul', 'narxlar', 'adyol', 'ko\'rpa', 'mebel']), state="*")
+@dp.message_handler(lambda message: message.text and any(word in message.text.lower() for word in ['narx', 'narxi', 'qancha', 'necha pul', 'narxlar', 'adyol', 'ko\'rpa', 'mebel']), state="*")
 async def send_prices(message: types.Message):
     price_text = (
         "🧼 *Amin Gilam Yuvish Xizmati Narxlari:*\n\n"
@@ -161,5 +195,12 @@ async def send_socials(message: types.Message):
     )
     await message.reply(social_text, parse_mode="Markdown", disable_web_page_preview=True)
 
+# Har qanday xatolik yuz berganda bot o'chib qolmasligi uchun
+@dp.errors_handler()
+async def errors_handler(update, exception):
+    logging.error(f"Xatolik yuz berdi: {exception}")
+    return True
+
 if __name__ == '__main__':
+    keep_alive()
     executor.start_polling(dp, skip_updates=True)
