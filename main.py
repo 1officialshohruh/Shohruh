@@ -26,7 +26,7 @@ async def send_welcome(message: types.Message, state: FSMContext):
     await state.finish() 
     if message.chat.type == 'private':
         welcome_text = (
-            f"👋 Assalomu alaykum, hurmatli mijoz {message.from_user.first_name}!\n\n"
+            f"👋 Assalomu alaykum hurmatli mijoz {message.from_user.first_name}!\n\n"
             "🧼 *Amin Gilam Yuvish* professional xizmati botiga xush kelibsiz!\n"
             "Siz bu yerda xizmatlarimiz bilan tanishishingiz va buyurtma berishingiz mumkin.\n\n"
             "📌 *Menyu buyruqlari:*\n"
