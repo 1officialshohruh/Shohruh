@@ -8,7 +8,7 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 API_TOKEN = '9099509925:AAERv-PJljPeIcZOFqI577fxxMNZ9HOuVnY'
 
 # ⚠️ Keyinchalik o'zingizning shaxsiy Telegram ID-ingizni shu yerga yozasiz (Masalan: ADMIN_ID = 12345678)
-ADMIN_ID = None
+ADMIN_ID = None  
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
@@ -93,7 +93,7 @@ async def process_address(message: types.Message, state: FSMContext):
         
         client_text = (
             "🎉 *Buyurtmangiz muvaffaqiyatli qabul qilindi!*\n\n"
-            "Tez orada operatorimiz siz bilan bog'lanadi. Rahmat!\n\n"
+            "Tez ora-da operatorimiz siz bilan bog'lanadi. Rahmat!\n\n"
             "📞 *Tezkor aloqa:* (88) 263 63 63"
         )
         await message.reply(client_text, parse_mode="Markdown")
