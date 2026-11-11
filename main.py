@@ -8,7 +8,7 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 API_TOKEN = '9099509925:AAERv-PJljPeIcZOFqI577fxxMNZ9HOuVnY'
 
 # ⚠️ Keyinchalik o'zingizning shaxsiy Telegram ID-ingizni shu yerga yozasiz (Masalan: ADMIN_ID = 12345678)
-ADMIN_ID = None  
+ADMIN_ID = None
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
@@ -26,7 +26,7 @@ async def send_welcome(message: types.Message, state: FSMContext):
     await state.finish() 
     if message.chat.type == 'private':
         welcome_text = (
-            f"👋 Assalomu alaykum hurmatli mijoz {message.from_user.first_name}!\n\n"
+            f"👋 Assalomu alaykum, hurmatli mijoz {message.from_user.first_name}!\n\n"
             "🧼 *Amin Gilam Yuvish* professional xizmati botiga xush kelibsiz!\n"
             "Siz bu yerda xizmatlarimiz bilan tanishishingiz va buyurtma berishingiz mumkin.\n\n"
             "📌 *Menyu buyruqlari:*\n"
