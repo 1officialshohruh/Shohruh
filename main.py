@@ -59,16 +59,16 @@ def price_blk(raw: int, disc: int, unp: bool) -> str:
     return f"🎁 *Chegirma ({disc}%):* Operator kelishadi"
 
 def parse_area(t: str):
-    parts = t.lower().replace(",", ".").replace("*", "x").replace("х", "x").split("+")
+    parts = t.lower().replace(",", ".").replace("*", "x").replace("х", "x").replace("×", "x").split("+")
     tot, f = 0.0, []
     for p in parts:
         ns = re.findall(r"\d+(?:\.\d+)?", p)
         if "x" in p and len(ns) >= 2:
-            a, b = float(ns), float(ns)
+            a, b = float(ns[0]), float(ns[1])
             ar = round(a * b, 2); tot += ar
             f.append(f"{int(a) if a.is_integer() else a}×{int(b) if b.is_integer() else b}={int(ar) if ar.is_integer() else ar}")
         elif ns:
-            ar = float(ns); tot += ar
+            ar = float(ns[0]); tot += ar
             f.append(f"{int(ar) if ar.is_integer() else ar} kv.m")
     tot = round(tot, 2)
     return tot, (int(tot) if tot.is_integer() else tot), " + ".join(f)
@@ -83,10 +83,49 @@ async def cmd_start(m: types.Message, state: FSMContext):
     if m.chat.type == 'private':
         await m.answer(f"👋 Assalomu alaykum, hurmatli mijoz *{m.from_user.first_name}*!\n\n🧼 *Amin Cleaning — tozalik xizmati* botiga xush kelibsiz!\n🚚 *Olib ketish va yetkazish — BEPUL!*\n👇 Kerakli tugmani bosing:", reply_markup=main_kb())
 
-@dp.callback_query_handler(lambda c: c.data == "m_home", state="*")
-async def cb_home(c: types.CallbackQuery, state: FSMContext):
+@dp.callback_query_handler(lambda c: c.data == "m_calc", state="*")
+async def cb_calc(c: types.CallbackQuery, state: FSMContext):
     await state.finish()
-    await c.message.edit_text("🧼 *Amin Cleaning — Asosiy menyu*\n🚚 *Olib ketish va yetkazish — BEPUL!*", reply_markup=main_kb()); await c.answer()
+    async with state.proxy() as d: d['c_tot'], d['c_fm'] = 0.0, []
+    await Calc.size.set()
+    await c.message.answer("🧮 *1-gilam o'lchamini yozing* (Masalan: `2×5` yoki `3x4` yoki kvadratni `10` deb yozing):")
+    await c.answer()
+
+@dp.message_handler(state=Calc.size)
+async def pr_calc(m: types.Message, state: FSMContext):
+    ar, ts, fm = parse_area(m.text)
+    if ar <= 0: return await m.reply("❌ Noto'g'ri format. Masalan: `2×5` yoki `10` deb yozing:")
+    async with state.proxy() as d:
+        d['c_tot'] = round(d.get('c_tot', 0.0) + ar, 2)
+        d['c_fm'].append(fm)
+        tot = d['c_tot']
+        tot_s = int(tot) if tot.is_integer() else tot
+    kb = types.InlineKeyboardMarkup(row_width=1).add(
+        types.InlineKeyboardButton("➕ Yana gilam qo'shish", callback_data="calc_more"),
+        types.InlineKeyboardButton("✅ Tayyor (Narxni hisoblash)", callback_data="calc_done")
+    )
+    await m.answer(f"✅ *Qo'shildi:* {fm}\n📐 *Jami maydon:* *{tot_s} kv.m*\n\nYana gilam bormi yoki hisoblaymizmi?", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data in ("calc_more", "calc_done"), state=Calc.size)
+async def cb_calc_act(c: types.CallbackQuery, state: FSMContext):
+    if c.data == "calc_more":
+        await c.message.edit_text("📐 *Keyingi gilam o'lchamini yozing* (Masalan: `3×4`):")
+        return await c.answer()
+    async with state.proxy() as d:
+        tot = d.get('c_tot', 0.0)
+        fm_all = " + ".join(d.get('c_fm', []))
+    tot_s = int(tot) if tot.is_integer() else tot
+    raw = int(tot * 15000)
+    await state.finish()
+    await c.message.edit_text(
+        f"📐 *Jami o'lcham:* {fm_all} (*{tot_s} kv.m*)\n"
+        f"💰 *Asl narxi:* {raw:,} so'm\n"
+        f"🎁 *5% chegirma:* *{int(raw*0.95):,} so'm*\n"
+        f"🔥 *10% (Kombo 2×/Qo'shnilar):* *{int(raw*0.9):,} so'm*\n\n"
+        f"🚚 *Olib ketish va yetkazish — BEPUL!*".replace(",", " "),
+        reply_markup=main_kb()
+    )
+    await c.answer()
 
 @dp.message_handler(commands=['narxlar', 'parda', 'aksiya', 'ijtimoy'], state="*")
 async def cmd_infos(m: types.Message):
@@ -212,6 +251,36 @@ async def pr_srvs(c: types.CallbackQuery, state: FSMContext):
         await c.message.edit_text(f"🧼 *Tanlandi ({len(sel)} ta):*", reply_markup=srvs_kb(sel)); await c.answer()
 
 @dp.message_handler(state=Ord.carpet)
+async def pr_carp(m: types.Message, state: FSMContext):
+    ar, ts, fm = parse_area(m.text)
+    if ar <= 0: return await m.reply("❌ Noto'g'ri o'lcham. Masalan: `2×5` deb yozing:")
+    async with state.proxy() as d:
+        d['carp_tot'] = round(d.get('carp_tot', 0.0) + ar, 2)
+        d.setdefault('carp_fms', []).append(fm)
+        tot = d['carp_tot']
+        tot_s = int(tot) if tot.is_integer() else tot
+    kb = types.InlineKeyboardMarkup(row_width=1).add(
+        types.InlineKeyboardButton("➕ Yana gilam qo'shish", callback_data="ord_cmore"),
+        types.InlineKeyboardButton("➡️ Tayyor (Davom etish)", callback_data="ord_cdone")
+    )
+    await m.answer(f"✅ *Qo'shildi:* {fm}\n📐 *Jami gilam:* *{tot_s} kv.m*\n\nYana gilam qo'shasizmi?", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data in ("ord_cmore", "ord_cdone"), state=Ord.carpet)
+async def cb_ord_carp(c: types.CallbackQuery, state: FSMContext):
+    if c.data == "ord_cmore":
+        await c.message.edit_text("📐 *Keyingi gilam o'lchamini yozing* (Masalan: `3×4`):")
+        return await c.answer()
+    async with state.proxy() as d:
+        tot = d.get('carp_tot', 0.0)
+        tot_s = int(tot) if tot.is_integer() else tot
+        fm_all = " + ".join(d.get('carp_fms', []))
+        p = int(tot * 15000)
+        d['raw'] += p
+        d['det'].append(f"🧶 Gilam: {fm_all} | {tot_s}×15 000 = {p:,} so'm".replace(",", " "))
+        d['carp_tot'], d['carp_fms'] = 0.0, []
+    await c.answer()
+    await next_step(c, state)
+
 async def pr_carp(m: types.Message, state: FSMContext):
     ar, ts, fm = parse_area(m.text)
     if ar <= 0: return await m.reply("❌ Noto'g'ri o'lcham. Masalan: `2x5`")
