@@ -1,6 +1,9 @@
 import logging
 import os
+import re
+import sqlite3
 import asyncio
+from datetime import datetime, timedelta, timezone
 from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, executor, types
@@ -8,16 +11,53 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
-# ⚠️ 1. @BotFather dan olgan YANGI tokeningizni qo'shtirnoq ichiga yozing
-API_TOKEN = '9099509925:AAGPJRkvzUyI272DmQRbu-3MxeYV4q6-zfs'
+# ==========================================================
+# ⚠️ SHU 5 TA QATORGA O'Z MA'LUMOTLARINGIZNI YOZING:
+# ==========================================================
+API_TOKEN = '9129369525:AAGOgJQINhbLyXTpozVmCzFS8HWgeuRivTw'
+BOSS_ID = 2146334166                 # Boshliqning (sizning) Telegram ID raqamingiz
+OPERATOR_ID = 2146334166             # Operatorning Telegram ID raqami
+COURIER_ID = 2146334166              # Kuryerning Telegram ID raqami
+WORKERS_GROUP_ID = -2146334166   # Ishchilar guruhining ID raqami (minus bilan)
+# ==========================================================
 
-# ⚠️ 2. O'zingizning Telegram ID raqamingizni yozing (Masalan: ADMIN_ID = 123456789)
-ADMIN_ID = None
-
+UZ_TZ = timezone(timedelta(hours=5))
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=API_TOKEN, parse_mode="Markdown")
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
+
+# ==========================================================
+# MA'LUMOTLAR BAZASI (SQLite) - #1001 DAN RAQAMLASH
+# ==========================================================
+conn = sqlite3.connect("amin_cleaning.db", check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    full_name TEXT,
+    phone TEXT,
+    service TEXT,
+    details TEXT,
+    total_price INTEGER,
+    discount_percent INTEGER,
+    final_price INTEGER,
+    lat REAL,
+    lon REAL,
+    orientir TEXT,
+    status TEXT,
+    delivered_at TEXT,
+    rating INTEGER DEFAULT 0
+)
+""")
+conn.commit()
+
+cursor.execute("SELECT COUNT(*) FROM orders")
+if cursor.fetchone()[0] == 0:
+    cursor.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('orders', 1000)")
+    conn.commit()
 
 # ==========================================================
 # BOTNI 24/7 UYG'OQ TUTIB TURUVCHI VEB-SERVER QISMI
@@ -26,7 +66,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Amin Gilam Yuvish boti 24/7 faol ishlamoqda!"
+    return "Amin Cleaning boti 24/7 uzluksiz faol ishlamoqda!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -36,171 +76,172 @@ def keep_alive():
     t = Thread(target=run_web)
     t.daemon = True
     t.start()
+
 # ==========================================================
+# ZAMONAVIY INLINE MENYU
+# ==========================================================
+def inline_main_menu():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(types.InlineKeyboardButton("🧺 Buyurtma berish", callback_data="menu_order"))
+    kb.add(
+        types.InlineKeyboardButton("🧮 Narx hisoblash", callback_data="menu_calc"),
+        types.InlineKeyboardButton("📊 Narxlar va xizmatlar", callback_data="menu_prices")
+    )
+    kb.add(
+        types.InlineKeyboardButton("🪟 Parda xizmati", callback_data="menu_parda"),
+        types.InlineKeyboardButton("🛋 Mebel (Rasm yuborish)", callback_data="menu_furniture")
+    )
+    kb.add(
+        types.InlineKeyboardButton("📦 Buyurtmam holati", callback_data="menu_status"),
+        types.InlineKeyboardButton("🎁 Chegirmalar (Kombo 2×)", callback_data="menu_promo")
+    )
+    kb.add(
+        types.InlineKeyboardButton("🌐 Instagram & Telegram", callback_data="menu_socials"),
+        types.InlineKeyboardButton("📞 Aloqa va Manzil", callback_data="menu_contact")
+    )
+    return kb
 
 class OrderState(StatesGroup):
-    name = State()
+    tariff = State()
+    services_select = State()
+    carpet_size = State()
+    blanket_type = State()
+    blanket_count = State()
+    quilt_count = State()
+    korpacha_count = State()
+    curtain_type = State()
+    furniture_photo = State()
     phone = State()
-    address = State()
+    location = State()
+    orientir = State()
 
+class CalcState(StatesGroup):
+    size = State()
+
+def format_price_block(raw_total: int, discount: int, has_unpriced: bool) -> str:
+    if raw_total > 0:
+        final_price = int(raw_total * (100 - discount) / 100)
+        raw_str = f"{raw_total:,}".replace(",", " ")
+        final_str = f"{final_price:,}".replace(",", " ")
+        extra = " _(+ kelishiladigan xizmat)_" if has_unpriced else ""
+        return (
+            f"💰 *Asl narxi:* {raw_str} so'm\n"
+            f"🎁 *Chegirma bilan ({discount}%):* *{final_str} so'm*{extra}"
+        )
+    else:
+        return f"🎁 *Chegirma ({discount}%):* Operator rasm/miqdorga qarab kelishadi"
+
+def parse_carpet_details(text: str):
+    clean = text.lower().replace(",", ".").replace("*", "x").replace("х", "x")
+    parts = clean.split("+")
+    total_area = 0.0
+    formulas = []
+    for part in parts:
+        part = part.strip()
+        if "x" in part:
+            nums = re.findall(r"\d+(?:\.\d+)?", part)
+            if len(nums) >= 2:
+                a, b = float(nums[0]), float(nums[1])
+                area = round(a * b, 2)
+                total_area += area
+                a_s = int(a) if a.is_integer() else a
+                b_s = int(b) if b.is_integer() else b
+                ar_s = int(area) if area.is_integer() else area
+                formulas.append(f"{a_s}×{b_s}={ar_s}")
+        else:
+            nums = re.findall(r"\d+(?:\.\d+)?", part)
+            if nums:
+                area = float(nums[0])
+                total_area += area
+                ar_s = int(area) if area.is_integer() else area
+                formulas.append(f"{ar_s} kv.m")
+    total_area = round(total_area, 2)
+    tot_s = int(total_area) if total_area.is_integer() else total_area
+    return total_area, tot_s, " + ".join(formulas)
+
+def check_180_promo(user_id: int) -> bool:
+    cursor.execute("SELECT delivered_at FROM orders WHERE user_id=? AND status='Topshirildi' ORDER BY id DESC LIMIT 1", (user_id,))
+    row = cursor.fetchone()
+    if row and row[0]:
+        delivered_date = datetime.fromisoformat(row[0])
+        days = (datetime.now(UZ_TZ).date() - delivered_date.date()).days
+        if days in (180, 181, 182, 183, 184, 186):
+            return True
+    return False
+
+# ==========================================================
+# ASOSIY BUYRUQLAR VA MENYU HANDLERLARI
+# ==========================================================
 @dp.message_handler(commands=['start'], state="*")
 async def send_welcome(message: types.Message, state: FSMContext):
     await state.finish()
     if message.chat.type == 'private':
         welcome_text = (
-            f"👋 Assalomu alaykum, hurmatli mijoz {message.from_user.first_name}!\n\n"
-            "🧼 *Amin Gilam Yuvish* professional xizmati botiga xush kelibsiz!\n"
-            "Siz bu yerda xizmatlarimiz bilan tanishishingiz va buyurtma berishingiz mumkin.\n\n"
-            "📌 *Menyu buyruqlari:*\n"
-            "📦 /buyurtma — Onlayn buyurtma berish\n"
-            "📊 /narxlar — Narxlar va xizmatlar\n"
-            "🧺 /parda — Parda yechib-ilib berish xizmati\n"
-            "🎁 /aksiya — Chegirmalar va aksiyalar\n"
-            "🌐 /ijtimoy — Guruhimiz va Instagram"
+            f"👋 Assalomu alaykum, hurmatli mijoz *{message.from_user.first_name}*!\n\n"
+            "🧼 *Amin Cleaning — tozalik xizmati* botiga xush kelibsiz!\n"
+            "Biz Termiz shahri bo'ylab gilam, adyol, ko'rpa-ko'rpacha, parda va yumshoq mebellarni professional yuvib beramiz.\n\n"
+            "🚚 *Olib ketish va yetkazib berish — BEPUL!*\n"
+            "👇 Kerakli xizmat tugmasini bosing:"
         )
-        await message.reply(welcome_text, parse_mode="Markdown")
+        await message.answer(welcome_text, reply_markup=inline_main_menu())
 
-@dp.message_handler(commands=['buyurtma'], state="*")
-async def start_order(message: types.Message):
-    await OrderState.name.set()
-    await message.reply(
-        "📦 *Onlayn buyurtma berishni boshlaymiz.*\n\n"
-        "Iltimos, ismingizni kiriting:",
-        parse_mode="Markdown",
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-
-@dp.message_handler(state=OrderState.name)
-async def process_name(message: types.Message, state: FSMContext):
-    if not message.text:
-        await message.reply("Iltimos, ismingizni matn ko'rinishida yozing:")
-        return
-
-    async with state.proxy() as data:
-        data['name'] = message.text
-    await OrderState.next()
-
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    button = types.KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)
-    keyboard.add(button)
-
-    await message.reply(
-        "Rahmat! Endi pastdagi tugmani bosish orqali yoki qo'lda *telefon raqamingizni* yuboring:",
-        reply_markup=keyboard,
-        parse_mode="Markdown"
-    )
-
-@dp.message_handler(content_types=types.ContentType.CONTACT, state=OrderState.phone)
-async def process_phone_contact(message: types.Message, state: FSMContext):
-    async with state.proxy() as data:
-        data['phone'] = message.contact.phone_number
-    await OrderState.next()
-    await message.reply(
-        "Ajoyib! Oxirgi bosqich: *Manzilingizni* yozib qoldiring (Masalan: Termiz sh., Navoiy ko'chasi, 12-uy):",
-        reply_markup=types.ReplyKeyboardRemove(),
-        parse_mode="Markdown"
-    )
-
-@dp.message_handler(state=OrderState.phone)
-async def process_phone_text(message: types.Message, state: FSMContext):
-    if not message.text:
-        await message.reply("Iltimos, telefon raqamingizni yozing yoki pastdagi tugmani bosing:")
-        return
-
-    async with state.proxy() as data:
-        data['phone'] = message.text
-    await OrderState.next()
-    await message.reply(
-        "Ajoyib! Oxirgi bosqich: *Manzilingizni* yozib qoldiring (Masalan: Termiz sh., Navoiy ko'chasi, 12-uy):",
-        reply_markup=types.ReplyKeyboardRemove(),
-        parse_mode="Markdown"
-    )
-
-@dp.message_handler(state=OrderState.address)
-async def process_address(message: types.Message, state: FSMContext):
-    if not message.text:
-        await message.reply("Iltimos, manzilingizni matn ko'rinishida yozib qoldiring:")
-        return
-
-    async with state.proxy() as data:
-        data['address'] = message.text
-
-        client_text = (
-            "🎉 *Buyurtmangiz muvaffaqiyatli qabul qilindi!*\n\n"
-            "Tez orada operatorimiz siz bilan bog'lanadi. Rahmat!\n\n"
-            "📞 *Tezkor aloqa:* (88) 263 63 63"
-        )
-        await message.reply(client_text, parse_mode="Markdown")
-
-        admin_text = (
-            "🔔 *YANGI BUYURTMA KELDI!*\n\n"
-            f"👤 *Mijoz:* {data['name']}\n"
-            f"📞 *Telefon:* {data['phone']}\n"
-            f"📍 *Manzil:* {data['address']}\n"
-            f"🆔 *Telegram Username:* @{message.from_user.username if message.from_user.username else 'Mavjud emas'}"
-        )
-
-        if ADMIN_ID is not None:
-            try:
-                await bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode="Markdown")
-            except Exception as e:
-                logging.error(f"Adminga xabar yuborishda xatolik: {e}")
-        else:
-            logging.warning("ADMIN_ID kiritilmagan! Buyurtma hech kimga yuborilmadi.")
-
+@dp.callback_query_handler(lambda c: c.data == "menu_home", state="*")
+async def back_to_home(call: types.CallbackQuery, state: FSMContext):
     await state.finish()
+    welcome_text = (
+        "🧼 *Amin Cleaning — Asosiy menyu*\n\n"
+        "🚚 *Termiz shahri bo'ylab olib ketish va yetkazib berish xizmati — BEPUL!*\n"
+        "👇 Kerakli bo'limni tanlang:"
+    )
+    await call.message.edit_text(welcome_text, reply_markup=inline_main_menu())
+    await call.answer()
 
-@dp.message_handler(commands=['narxlar'], state="*")
-@dp.message_handler(lambda message: message.text and any(word in message.text.lower() for word in ['narx', 'narxi', 'qancha', 'necha pul', 'narxlar', 'adyol', 'ko\'rpa', 'mebel']), state="*")
-async def send_prices(message: types.Message):
-    price_text = (
-        "🧼 *Amin Gilam Yuvish Xizmati Narxlari:*\n\n"
+def get_prices_text():
+    return (
+        "🧼 *Amin Cleaning — Xizmatlar va Narxlar:*\n\n"
         "🔸 *Gilam yuvish:* 1 kv.m — 15 000 so'm\n"
-        "🔸 *Adyol yuvish:* 1 dona — 60 000 so'm\n"
+        "🔸 *Adyol (1 kishilik):* 1 dona — 60 000 so'm\n"
+        "🔸 *Adyol (2 kishilik):* Operatorimiz bilan kelishiladi\n"
         "🔸 *Ko'rpacha yuvish:* 1 dona — 50 000 so'm\n"
         "🔸 *Ko'rpa yuvish:* 1 dona — 70 000 so'm\n"
         "🔸 *Parda yuvish (oddiy):* 1 kg — 30 000 so'm\n"
-        "🔸 *Mebel yuvish:* 1 kishilik — 90 000 so'm\n\n"
-        "📞 *Buyurtma uchun:* (88) 263 63 63 | (88) 577 63 63"
+        "🔸 *Parda (yechib + yuvib + ilib berish):* 1 kg — 40 000 so'm\n"
+        "🔸 *Yumshoq mebel yuvish:* Mebel rasmiga qarab operatorimiz bilan kelishiladi\n\n"
+        "🎁 *CHEGIRMALAR:*\n"
+        "✅ Bot orqali 1 ta xizmatga — *5% chegirma!*\n"
+        "🔥 *Kombo 2×* (2 ta va undan ko'p xizmat birga: Gilam + Adyol, Gilam + Parda, Ko'rpa + Mebel va h.k.) — *10% chegirma!*\n"
+        "🏘 *Qo'shningiz bilan birga* buyurtma bersangiz — *10% chegirma!*\n\n"
+        "📞 *Operator:* (88) 263 63 63\n"
+        "🚚 *Kuryer:* (88) 577 63 63"
     )
-    await message.reply(price_text, parse_mode="Markdown")
 
-@dp.message_handler(commands=['parda'], state="*")
-async def send_parda_info(message: types.Message):
-    parda_text = (
-        "🧺 *Parda yechib-ilib berish xizmati:*\n\n"
+@dp.message_handler(commands=['narxlar'], state="*")
+async def cmd_prices(message: types.Message):
+    await message.answer(get_prices_text(), reply_markup=inline_main_menu())
+
+@dp.callback_query_handler(lambda c: c.data == "menu_prices", state="*")
+async def send_prices_cb(call: types.CallbackQuery):
+    kb = types.InlineKeyboardMarkup().add(
+        types.InlineKeyboardButton("🧺 Buyurtma berish", callback_data="menu_order"),
+        types.InlineKeyboardButton("⬅️ Asosiy menyu", callback_data="menu_home")
+    )
+    await call.message.edit_text(get_prices_text(), reply_markup=kb)
+    await call.answer()
+
+def get_parda_text():
+    return (
+        "🪟 *Parda yechib-ilib berish xizmati:*\n\n"
         "Uyingizdan chiqib, parda yechishga va uni qayta ilishga vaqt sarflamang! "
         "Xodimlarimiz uyingizga borib, pardalarni *o'zlari ehtiyotkorlik bilan yechib olishadi* va yuvib bo'lingach, *yana o'zlari ilib berishadi*! 😎\n\n"
-        "💰 *Xizmat narxi:* 1 kg parda uchun — 40 000 so'm (Yuvish + Yechish + Ilib berish ichida)\n\n"
-        "📞 *Bog'lanish:* (88) 263 63 63 | (88) 577 63 63"
+        "💰 *O'zimiz yechib, yuvib, ilib beramiz:* 1 kg — *40 000 so'm*\n"
+        "🧺 *Oddiy yuvish (o'zingiz yechib bersangiz):* 1 kg — *30 000 so'm*\n\n"
+        "📞 *Operator:* (88) 263 63 63\n"
+        "🚚 *Kuryer:* (88) 577 63 63"
     )
-    await message.reply(parda_text, parse_mode="Markdown")
 
-@dp.message_handler(commands=['aksiya'], state="*")
-async def send_promo(message: types.Message):
-    promo_text = (
-        "🎁 *Chegirmalar va Aksiyalar:*\n\n"
-        "Hozircha faol aksiyalarimiz mavjud emas. Yaqin kunlarda siz uchun ajoyib va foydali aksiyalar e'lon qilamiz! 🔥\n\n"
-        "📢 Yangi aksiyalar va chegirmalar boshlanganda guruhimizda va ijtimoiy tarmoqlarimizda albatta xabar beramiz. Bizni kuzatishda davom eting!\n\n"
-        "📞 *Ma'lumot uchun:* (88) 263 63 63 | (88) 577 63 63"
-    )
-    await message.reply(promo_text, parse_mode="Markdown")
+@dp.message_handler(commands=['parda'], state="*")
+async def cmd_parda(message: types.Message):
+    await message.answer(get_parda_text(), reply_markup=inline_main_menu())
 
-@dp.message_handler(commands=['ijtimoy'], state="*")
-async def send_socials(message: types.Message):
-    social_text = (
-        "🌐 *Bizning ijtimoiy tarmoqlarimiz:*\n\n"
-        "💬 Telegram Guruhimiz: [Qo'shilish](https://t.me)\n"
-        "📸 Instagram Profilimiz: [Kuzatish](https://instagram.com)"
-    )
-    await message.reply(social_text, parse_mode="Markdown", disable_web_page_preview=True)
-
-# Har qanday xatolik yuz berganda bot o'chib qolmasligi uchun
-@dp.errors_handler()
-async def errors_handler(update, exception):
-    logging.error(f"Xatolik yuz berdi: {exception}")
-    return True
-
-if __name__ == '__main__':
-    keep_alive()
-    executor.start_polling(dp, skip_updates=True)
+@dp.callback_query_handler(lambda c: c.data == "menu_parda", state="*")
+async def send_parda_cb(call: types.CallbackQuery):
