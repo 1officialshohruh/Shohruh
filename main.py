@@ -15,10 +15,10 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 # ⚠️ SHU 5 TA QATORGA O'Z MA'LUMOTLARINGIZNI YOZING:
 # ==========================================================
 API_TOKEN = '9129369525:AAGOgJQINhbLyXTpozVmCzFS8HWgeuRivTw'
-BOSS_ID = 2146334166                 # Boshliqning (sizning) Telegram ID raqamingiz
-OPERATOR_ID = 2146334166             # Operatorning Telegram ID raqami
-COURIER_ID = 2146334166              # Kuryerning Telegram ID raqami
-WORKERS_GROUP_ID = -2146334166   # Ishchilar guruhining ID raqami (minus bilan)
+BOSS_ID = 2146334166
+OPERATOR_ID = 2146334166
+COURIER_ID = 2146334166
+WORKERS_GROUP_ID = -2146334166
 # ==========================================================
 
 UZ_TZ = timezone(timedelta(hours=5))
@@ -27,9 +27,6 @@ bot = Bot(token=API_TOKEN, parse_mode="Markdown")
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# ==========================================================
-# MA'LUMOTLAR BAZASI (SQLite) - #1001 DAN RAQAMLASH
-# ==========================================================
 conn = sqlite3.connect("amin_cleaning.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -59,9 +56,6 @@ if cursor.fetchone()[0] == 0:
     cursor.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('orders', 1000)")
     conn.commit()
 
-# ==========================================================
-# BOTNI 24/7 UYG'OQ TUTIB TURUVCHI VEB-SERVER QISMI
-# ==========================================================
 app = Flask('')
 
 @app.route('/')
@@ -77,9 +71,6 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# ==========================================================
-# ZAMONAVIY INLINE MENYU
-# ==========================================================
 def inline_main_menu():
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(types.InlineKeyboardButton("🧺 Buyurtma berish", callback_data="menu_order"))
@@ -128,8 +119,7 @@ def format_price_block(raw_total: int, discount: int, has_unpriced: bool) -> str
             f"💰 *Asl narxi:* {raw_str} so'm\n"
             f"🎁 *Chegirma bilan ({discount}%):* *{final_str} so'm*{extra}"
         )
-    else:
-        return f"🎁 *Chegirma ({discount}%):* Operator rasm/miqdorga qarab kelishadi"
+    return f"🎁 *Chegirma ({discount}%):* Operator rasm/miqdorga qarab kelishadi"
 
 def parse_carpet_details(text: str):
     clean = text.lower().replace(",", ".").replace("*", "x").replace("х", "x")
@@ -169,9 +159,6 @@ def check_180_promo(user_id: int) -> bool:
             return True
     return False
 
-# ==========================================================
-# ASOSIY BUYRUQLAR VA MENYU HANDLERLARI
-# ==========================================================
 @dp.message_handler(commands=['start'], state="*")
 async def send_welcome(message: types.Message, state: FSMContext):
     await state.finish()
@@ -190,7 +177,7 @@ async def back_to_home(call: types.CallbackQuery, state: FSMContext):
     await state.finish()
     welcome_text = (
         "🧼 *Amin Cleaning — Asosiy menyu*\n\n"
-        "🚚 *Termiz shahri bo'ylab olib ketish va yetkazib berish xizmati — BEPUL!*\n"
+        "🚚 *Termiz shahri bo'ylab olib ketish va yetkazish — BEPUL!*\n"
         "👇 Kerakli bo'limni tanlang:"
     )
     await call.message.edit_text(welcome_text, reply_markup=inline_main_menu())
@@ -205,7 +192,7 @@ def get_prices_text():
         "🔸 *Ko'rpacha yuvish:* 1 dona — 50 000 so'm\n"
         "🔸 *Ko'rpa yuvish:* 1 dona — 70 000 so'm\n"
         "🔸 *Parda yuvish (oddiy):* 1 kg — 30 000 so'm\n"
-        "🔸 *Parda (yechib + yuvib + ilib berish):* 1 kg — 40 000 so'm\n"
+        "🔸 *Parda (yechib + yuvib + ilib beramiz):* 1 kg — 40 000 so'm\n"
         "🔸 *Yumshoq mebel yuvish:* Mebel rasmiga qarab operatorimiz bilan kelishiladi\n\n"
         "🎁 *CHEGIRMALAR:*\n"
         "✅ Bot orqali 1 ta xizmatga — *5% chegirma!*\n"
@@ -245,3 +232,16 @@ async def cmd_parda(message: types.Message):
 
 @dp.callback_query_handler(lambda c: c.data == "menu_parda", state="*")
 async def send_parda_cb(call: types.CallbackQuery):
+    kb = types.InlineKeyboardMarkup().add(
+        types.InlineKeyboardButton("🧺 Buyurtma berish", callback_data="menu_order"),
+        types.InlineKeyboardButton("⬅️ Asosiy menyu", callback_data="menu_home")
+    )
+    await call.message.edit_text(get_parda_text(), reply_markup=kb)
+    await call.answer()
+
+def get_promo_text():
+    return (
+        "🎁 *Amin Cleaning — Chegirmalar va Aksiyalar:*\n\n"
+        "1️⃣ *Bot mijozi chegirmasi (5%):* Bot orqali berilgan har bir buyurtmaga avtomatik 5% chegirma!\n"
+        "2️⃣ *🔥 Kombo 2× aksiyasi (10%):* Bir vaqtning o'zida 2 ta yoki undan ko'p xizmatdan foydalansangiz (masalan: Gilam + Adyol, Gilam + Parda, Ko'rpacha + Gilam) — *10% chegirma*!\n"
+        "3️⃣ *🏘 «Qo'shnilar» tarifi (10%):* Qo'shningiz bilan birga buyurtma bersangiz, ikkalangizga ham *10% chegirma*!\n"
