@@ -269,14 +269,6 @@ async def cb_ord_carp(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
     await next_step(c, state)
 
-async def pr_carp(m: types.Message, state: FSMContext):
-    ar, ts, fm = parse_area(m.text)
-    if ar <= 0: return await m.reply("❌ Noto'g'ri o'lcham. Masalan: `2x5`")
-    p = int(ar * 15000)
-    async with state.proxy() as d:
-        d['raw'] += p; d['det'].append(f"🧶 Gilam: {fm} | {ts}×15 000 = {p:,} so'm".replace(",", " "))
-    await next_step(m, state)
-
 @dp.callback_query_handler(lambda c: c.data.startswith("b_"), state=Ord.blk_t)
 async def pr_blkt(c: types.CallbackQuery, state: FSMContext):
     async with state.proxy() as d: d['bt'] = c.data.split("_")[1]
