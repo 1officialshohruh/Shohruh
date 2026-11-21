@@ -164,18 +164,6 @@ async def boss_stat(m: types.Message):
     av, rc = cur.execute("SELECT AVG(rating), COUNT(rating) FROM orders WHERE rating>0").fetchone()
     await m.answer(f"📊 *STATISTIKA*\n📦 Jami: {tot} ta | ✅ Topshirildi: {dn} ta\n💰 Chegirmali tushum: {sm:,} so'm\n⭐ O'rtacha baho: {f'{av:.1f}/5 ({rc} ta)' if av else 'Yoq'}".replace(",", " "))
 
-@dp.callback_query_handler(lambda c: c.data == "m_calc", state="*")
-async def cb_calc(c: types.CallbackQuery):
-    await Calc.size.set(); await c.message.answer("🧮 Gilam o'lchamini yozing (Masalan: `2x5` yoki `2x5 + 3x4`):"); await c.answer()
-
-@dp.message_handler(state=Calc.size)
-async def pr_calc(m: types.Message, state: FSMContext):
-    ar, ts, fm = parse_area(m.text)
-    if ar <= 0: return await m.reply("❌ Noto'g'ri format. Masalan: `2x5`")
-    raw = int(ar * 15000)
-    await state.finish()
-    await m.answer(f"📐 *O'lcham:* {fm} ({ts} kv.m)\n💰 *Asl narxi:* {raw:,} so'm\n🎁 *5% chegirma:* *{int(raw*0.95):,} so'm*\n🔥 *10% (Kombo 2×/Qo'shnilar):* *{int(raw*0.9):,} so'm*".replace(",", " "), reply_markup=main_kb())
-
 @dp.callback_query_handler(lambda c: c.data == "m_furn", state="*")
 async def cb_furn(c: types.CallbackQuery, state: FSMContext):
     await state.finish()
