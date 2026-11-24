@@ -14,10 +14,11 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.utils.exceptions import TelegramAPIError
 
 # ⚠️ O'Z MA'LUMOTLARINGIZNI KIRITING:
-API_TOKEN = os.getenv("API_TOKEN", "9129369525:AAGOgJQINhbLyXTpozVmCzFS8HWgeuRivTw")
+API_TOKEN = os.getenv("API_TOKEN", "2146334166")
 BOSS_ID = int(os.getenv("BOSS_ID", "2146334166"))
 OPERATOR_ID = int(os.getenv("OPERATOR_ID", "2146334166"))
 COURIER_ID = int(os.getenv("COURIER_ID", "2146334166"))
+# Sex guruhi ID'si (-100... bilan boshlanadi, /id buyrug'i orqali oling)
 WORKERS_GROUP_ID = int(os.getenv("WORKERS_GROUP_ID", "-1003205663486"))
 
 UZ_TZ = timezone(timedelta(hours=5))
@@ -94,7 +95,7 @@ def main_kb():
     )
     kb.add(
         types.InlineKeyboardButton("🌐 Instagram & TG", callback_data="m_soc"),
-        types.InlineKeyboardButton("🆘 Yordam xizmati", callback_data="m_help"),
+        types.InlineKeyboardButton("🆘 Yordam / Taklif va e'tiroz", callback_data="m_help"),
     )
     kb.add(types.InlineKeyboardButton("📞 Aloqa", callback_data="m_cont"))
     return kb
@@ -107,6 +108,7 @@ class Calc(StatesGroup):
 
 class HelpState(StatesGroup):
     msg = State()
+    boss_reply = State()
 
 def esc(text) -> str:
     return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -167,6 +169,10 @@ def has_180(uid: int) -> bool:
         logger.exception("has_180 xatosi: %s", e)
         return False
 
+@dp.message_handler(commands=["id"], state="*")
+async def get_chat_id(m: types.Message):
+    await m.reply(f"🆔 Chat ID: <code>{m.chat.id}</code>")
+
 @dp.message_handler(commands=["start"], state="*")
 async def cmd_start(m: types.Message, state: FSMContext):
     await state.finish()
@@ -175,7 +181,7 @@ async def cmd_start(m: types.Message, state: FSMContext):
             f"👋 Assalomu alaykum, hurmatli mijoz <b>{esc(m.from_user.first_name)}</b>!\n\n"
             f"🧼 <b>Amin Cleaning — tozalik xizmati</b> botiga xush kelibsiz!\n"
             f"🚚 <b>Olib ketish va yetkazish — BEPUL!</b>\n"
-            f"🆘 Savol yoki murojaat uchun: <b>Yordam xizmati</b> tugmasini bosing.\n"
+            f"🆘 Taklif, e'tiroz yoki savollar uchun <b>«Yordam / Taklif va e'tiroz»</b> tugmasini bosing.\n"
             f"👇 Kerakli tugmani bosing:",
             reply_markup=main_kb(),
         )
@@ -189,16 +195,16 @@ async def cb_home(c: types.CallbackQuery, state: FSMContext):
     )
     await c.answer()
 
-# --- MIJOZLAR UCHUN YORDAM XIZMATI ---
+# --- MIJOZLAR UCHUN YORDAM XIZMATI (TAKLIF VA E'TIROZLAR BOSHLIQQA BORADI) ---
 @dp.message_handler(commands=["yordam"], state="*")
 @dp.callback_query_handler(lambda c: c.data == "m_help", state="*")
 async def start_help(ev, state: FSMContext):
     await state.finish()
     await HelpState.msg.set()
     txt = (
-        "🆘 <b>Mijozlar uchun yordam xizmati</b>\n\n"
-        "Savolingiz, taklifingiz yoki buyurtma bo'yicha murojaatingizni yozib yuboring. "
-        "Operatorimiz va rahbariyat ko'rib chiqib, siz bilan bog'lanadi.\n\n"
+        "🆘 <b>Yordam xizmati — Taklif va e'tirozlar</b>\n\n"
+        "Xizmatimiz haqida taklifingiz, e'tirozingiz yoki savolingizni yozib yuboring.\n"
+        "Xabaringiz to'g'ridan-to'g'ri <b>rahbariyatga (Boshliqqa)</b> yetkaziladi va sizga javob beriladi.\n\n"
         "📞 Tezkor aloqa: <b>(88) 263 63 63</b>"
     )
     if isinstance(ev, types.CallbackQuery):
@@ -210,7 +216,7 @@ async def start_help(ev, state: FSMContext):
 @dp.message_handler(state=HelpState.msg)
 async def save_help(m: types.Message, state: FSMContext):
     if not m.text or not m.text.strip():
-        return await m.reply("Iltimos, savol yoki murojaatingizni matn ko'rinishida yozing:")
+        return await m.reply("Iltimos, taklif, e'tiroz yoki savolingizni matn ko'rinishida yozing:")
     now_str = datetime.now(UZ_TZ).strftime("%Y-%m-%d %H:%M:%S")
     last_phone = cur.execute(
         "SELECT phone FROM orders WHERE user_id=? AND phone IS NOT NULL ORDER BY id DESC LIMIT 1",
@@ -224,26 +230,60 @@ async def save_help(m: types.Message, state: FSMContext):
     conn.commit()
     tid = cur.lastrowid
 
-    ticket_text = (
-        f"🆘 <b>YANGI YORDAM MUROJAATI #{tid}</b>\n"
+    boss_text = (
+        f"📩 <b>MIJOZDAN TAKLIF / E'TIROZ #{tid}</b>\n"
         f"👤 Mijoz: <b>{esc(m.from_user.full_name)}</b> (ID: <code>{m.from_user.id}</code>)\n"
         f"📞 Tel: <code>{esc(ph)}</code>\n"
         f"🕒 Vaqt: {now_str}\n\n"
         f"💬 Xabar:\n{esc(m.text.strip())}"
     )
-    for target_id in (OPERATOR_ID, BOSS_ID):
-        try:
-            await bot.send_message(target_id, ticket_text)
-        except Exception as e:
-            logger.error("Yordam xabarini yuborishda xato (%s): %s", target_id, e)
+    r_kb = types.InlineKeyboardMarkup().add(
+        types.InlineKeyboardButton("✍️ Mijozga javob yozish", callback_data=f"hrep_{m.from_user.id}_{tid}")
+    )
+    try:
+        await bot.send_message(BOSS_ID, boss_text, reply_markup=r_kb)
+    except Exception as e:
+        logger.error("Bossga yordam xabarini yuborishda xato: %s", e)
 
     await state.finish()
     await m.answer(
-        f"✅ <b>Murojaatingiz #{tid} qabul qilindi!</b>\n"
-        f"Tez orada operatorimiz siz bilan bog'lanadi.\n"
+        f"✅ <b>Murojaatingiz #{tid} rahbariyatga yuborildi!</b>\n"
+        f"Tez orada sizga javob beramiz. Rahmat!\n"
         f"📞 Operator: <b>(88) 263 63 63</b>",
         reply_markup=main_kb(),
     )
+
+@dp.callback_query_handler(lambda c: c.data.startswith("hrep_"), state="*")
+async def boss_start_reply(c: types.CallbackQuery, state: FSMContext):
+    if c.from_user.id != BOSS_ID:
+        return await c.answer("Faqat rahbariyat uchun!", show_alert=True)
+    _, uid_s, tid_s = c.data.split("_")
+    async with state.proxy() as d:
+        d["reply_uid"] = int(uid_s)
+        d["reply_tid"] = int(tid_s)
+    await HelpState.boss_reply.set()
+    await c.message.answer(f"✍️ <b>#{tid_s}-murojaat egasiga javob matnini yozing:</b>")
+    await c.answer()
+
+@dp.message_handler(state=HelpState.boss_reply)
+async def boss_send_reply(m: types.Message, state: FSMContext):
+    if m.from_user.id != BOSS_ID:
+        return
+    if not m.text or not m.text.strip():
+        return await m.reply("Javob matnini yozing:")
+    async with state.proxy() as d:
+        uid = d.get("reply_uid")
+        tid = d.get("reply_tid")
+    await state.finish()
+    try:
+        await bot.send_message(
+            uid,
+            f"📬 <b>Amin Cleaning rahbariyatidan javob (#{tid}):</b>\n\n{esc(m.text.strip())}",
+            reply_markup=main_kb(),
+        )
+        await m.answer(f"✅ Javobingiz mijozga yuborildi (#{tid}).")
+    except Exception as e:
+        await m.answer(f"❌ Mijozga yuborib bo'lmadi: {esc(e)}")
 
 # --- KALKULYATOR ---
 @dp.callback_query_handler(lambda c: c.data == "m_calc", state="*")
@@ -338,6 +378,4 @@ async def cb_infos(c: types.CallbackQuery):
     elif d == "m_promo":
         t = (
             "🎁 <b>Chegirmalar:</b>\n\n"
-            "1️⃣ <b>Bot orqali:</b> 5% chegirma\n"
-            "2️⃣ <b>🔥 Kombo 2×</b> (2+ xizmat birga): <b>10% chegirma</b>\n"
-            "3️⃣ <b>🏘 Qo'shnilar tarifi:</b> <b>1
+            "1️⃣ <b>Bot or
