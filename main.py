@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import asyncio
+import traceback
 from datetime import datetime, timedelta, timezone
 from threading import Thread
 from flask import Flask
@@ -17,7 +18,6 @@ API_TOKEN = os.getenv("API_TOKEN", "9129369525:AAGOgJQINhbLyXTpozVmCzFS8HWgeuRiv
 BOSS_ID = int(os.getenv("BOSS_ID", "2146334166"))
 OPERATOR_ID = int(os.getenv("OPERATOR_ID", "2146334166"))
 COURIER_ID = int(os.getenv("COURIER_ID", "2146334166"))
-# Diqqat: Telegram superguruh ID odatda -100... bilan boshlanadi
 WORKERS_GROUP_ID = int(os.getenv("WORKERS_GROUP_ID", "-1003205663486"))
 
 UZ_TZ = timezone(timedelta(hours=5))
@@ -49,9 +49,18 @@ CREATE TABLE IF NOT EXISTS orders (
     rating INTEGER DEFAULT 0
 )
 """)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS support_tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    full_name TEXT,
+    phone TEXT,
+    message TEXT,
+    created_at TEXT
+)
+""")
 conn.commit()
 
-# Agar jadval bo'sh bo'lsa, keyingi ID 1001 dan boshlanishi uchun
 cur.execute("SELECT COUNT(*) FROM orders")
 if cur.fetchone()[0] == 0:
     cur.execute("INSERT OR IGNORE INTO sqlite_sequence (name, seq) VALUES ('orders', 1000)")
@@ -85,8 +94,9 @@ def main_kb():
     )
     kb.add(
         types.InlineKeyboardButton("🌐 Instagram & TG", callback_data="m_soc"),
-        types.InlineKeyboardButton("📞 Aloqa", callback_data="m_cont"),
+        types.InlineKeyboardButton("🆘 Yordam xizmati", callback_data="m_help"),
     )
+    kb.add(types.InlineKeyboardButton("📞 Aloqa", callback_data="m_cont"))
     return kb
 
 class Ord(StatesGroup):
@@ -95,13 +105,30 @@ class Ord(StatesGroup):
 class Calc(StatesGroup):
     size = State()
 
+class HelpState(StatesGroup):
+    msg = State()
+
 def esc(text) -> str:
     return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+async def report_to_boss(title: str, detail: str, user_info: str = ""):
+    text = (
+        f"🚨 <b>{esc(title)}</b>\n"
+        f"🕒 Vaqt: {datetime.now(UZ_TZ).strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"{('👤 Mijoz: ' + esc(user_info) + '\n') if user_info else ''}"
+        f"📝 Tavsif:\n<code>{esc(detail[:1800])}</code>"
+    )
+    try:
+        await bot.send_message(BOSS_ID, text)
+    except Exception as e:
+        logger.error("Bossga xato yuborishda muammo: %s", e)
+
 def price_blk(raw: int, disc: int, unp: bool) -> str:
-    if raw and raw > 0:
+    raw = raw or 0
+    disc = disc or 0
+    if raw > 0:
         fp = int(raw * (100 - disc) / 100)
-        ex = " <i>(+ kelishiladigan xizmat)</i>" if unp else ""
+        ex = " <i>(+ kelishiladigan xizmat qo'shiladi)</i>" if unp else ""
         return (
             f"💰 <b>Asl narxi:</b> {raw:,} so'm\n"
             f"🎁 <b>Chegirma bilan ({disc}%):</b> <b>{fp:,} so'm</b>{ex}"
@@ -148,6 +175,7 @@ async def cmd_start(m: types.Message, state: FSMContext):
             f"👋 Assalomu alaykum, hurmatli mijoz <b>{esc(m.from_user.first_name)}</b>!\n\n"
             f"🧼 <b>Amin Cleaning — tozalik xizmati</b> botiga xush kelibsiz!\n"
             f"🚚 <b>Olib ketish va yetkazish — BEPUL!</b>\n"
+            f"🆘 Savol yoki murojaat uchun: <b>Yordam xizmati</b> tugmasini bosing.\n"
             f"👇 Kerakli tugmani bosing:",
             reply_markup=main_kb(),
         )
@@ -156,11 +184,68 @@ async def cmd_start(m: types.Message, state: FSMContext):
 async def cb_home(c: types.CallbackQuery, state: FSMContext):
     await state.finish()
     await c.message.edit_text(
-        f"🧼 <b>Amin Cleaning — asosiy menyu</b>\n🚚 <b>Olib ketish va yetkazish — BEPUL!</b>",
+        "🧼 <b>Amin Cleaning — asosiy menyu</b>\n🚚 <b>Olib ketish va yetkazish — BEPUL!</b>",
         reply_markup=main_kb(),
     )
     await c.answer()
 
+# --- MIJOZLAR UCHUN YORDAM XIZMATI ---
+@dp.message_handler(commands=["yordam"], state="*")
+@dp.callback_query_handler(lambda c: c.data == "m_help", state="*")
+async def start_help(ev, state: FSMContext):
+    await state.finish()
+    await HelpState.msg.set()
+    txt = (
+        "🆘 <b>Mijozlar uchun yordam xizmati</b>\n\n"
+        "Savolingiz, taklifingiz yoki buyurtma bo'yicha murojaatingizni yozib yuboring. "
+        "Operatorimiz va rahbariyat ko'rib chiqib, siz bilan bog'lanadi.\n\n"
+        "📞 Tezkor aloqa: <b>(88) 263 63 63</b>"
+    )
+    if isinstance(ev, types.CallbackQuery):
+        await ev.message.answer(txt)
+        await ev.answer()
+    else:
+        await ev.answer(txt)
+
+@dp.message_handler(state=HelpState.msg)
+async def save_help(m: types.Message, state: FSMContext):
+    if not m.text or not m.text.strip():
+        return await m.reply("Iltimos, savol yoki murojaatingizni matn ko'rinishida yozing:")
+    now_str = datetime.now(UZ_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    last_phone = cur.execute(
+        "SELECT phone FROM orders WHERE user_id=? AND phone IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (m.from_user.id,),
+    ).fetchone()
+    ph = last_phone[0] if last_phone else "Ko'rsatilmagan"
+    cur.execute(
+        "INSERT INTO support_tickets (user_id, full_name, phone, message, created_at) VALUES (?,?,?,?,?)",
+        (m.from_user.id, m.from_user.full_name, ph, m.text.strip(), now_str),
+    )
+    conn.commit()
+    tid = cur.lastrowid
+
+    ticket_text = (
+        f"🆘 <b>YANGI YORDAM MUROJAATI #{tid}</b>\n"
+        f"👤 Mijoz: <b>{esc(m.from_user.full_name)}</b> (ID: <code>{m.from_user.id}</code>)\n"
+        f"📞 Tel: <code>{esc(ph)}</code>\n"
+        f"🕒 Vaqt: {now_str}\n\n"
+        f"💬 Xabar:\n{esc(m.text.strip())}"
+    )
+    for target_id in (OPERATOR_ID, BOSS_ID):
+        try:
+            await bot.send_message(target_id, ticket_text)
+        except Exception as e:
+            logger.error("Yordam xabarini yuborishda xato (%s): %s", target_id, e)
+
+    await state.finish()
+    await m.answer(
+        f"✅ <b>Murojaatingiz #{tid} qabul qilindi!</b>\n"
+        f"Tez orada operatorimiz siz bilan bog'lanadi.\n"
+        f"📞 Operator: <b>(88) 263 63 63</b>",
+        reply_markup=main_kb(),
+    )
+
+# --- KALKULYATOR ---
 @dp.callback_query_handler(lambda c: c.data == "m_calc", state="*")
 async def cb_calc(c: types.CallbackQuery, state: FSMContext):
     await state.finish()
@@ -212,6 +297,7 @@ async def cb_calc_act(c: types.CallbackQuery, state: FSMContext):
     )
     await c.answer()
 
+# --- MA'LUMOTLAR ---
 @dp.message_handler(commands=["narxlar", "parda", "aksiya", "ijtimoy"], state="*")
 async def cmd_infos(m: types.Message):
     cmd = m.get_command().lstrip("/")
@@ -226,6 +312,7 @@ async def cb_infos(c: types.CallbackQuery):
     d = c.data
     back = types.InlineKeyboardMarkup().add(
         types.InlineKeyboardButton("🧺 Buyurtma", callback_data="m_order"),
+        types.InlineKeyboardButton("🆘 Yordam", callback_data="m_help"),
         types.InlineKeyboardButton("⬅️ Menyu", callback_data="m_home"),
     )
     if d == "m_prices":
@@ -253,490 +340,4 @@ async def cb_infos(c: types.CallbackQuery):
             "🎁 <b>Chegirmalar:</b>\n\n"
             "1️⃣ <b>Bot orqali:</b> 5% chegirma\n"
             "2️⃣ <b>🔥 Kombo 2×</b> (2+ xizmat birga): <b>10% chegirma</b>\n"
-            "3️⃣ <b>🏘 Qo'shnilar tarifi:</b> <b>10% chegirma</b>\n"
-            "4️⃣ <b>♻️ 6 oylik sovg'a:</b> <b>10% chegirma</b>"
-        )
-    elif d == "m_soc":
-        back = types.InlineKeyboardMarkup(row_width=1).add(
-            types.InlineKeyboardButton("📸 Instagram (@termiz_gilam_yuvishh)", url="https://instagram.com"),
-            types.InlineKeyboardButton("💬 Telegram (@termizgilamyuvishh)", url="https://t.me"),
-            types.InlineKeyboardButton("⬅️ Menyu", callback_data="m_home"),
-        )
-        t = "🌐 <b>Rasmiy sahifalarimizga obuna bo'ling:</b>"
-    elif d == "m_cont":
-        t = "📍 <b>Manzil:</b> Termiz shahri (Olib ketish va yetkazish BEPUL)\n📞 <b>Operator:</b> (88) 263 63 63\n🚚 <b>Kuryer:</b> (88) 577 63 63"
-    else:
-        o = cur.execute(
-            "SELECT id, service, status, total_price, discount_percent, final_price FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 1",
-            (c.from_user.id,),
-        ).fetchone()
-        if o:
-            oid, srv, st, raw, disc, fp = o
-            t = (
-                f"📦 <b>Buyurtma #{oid}</b>\n"
-                f"🧼 {esc(srv)}\n"
-                f"{price_blk(raw or 0, disc or 0, (fp or 0) == 0)}\n"
-                f"📍 <b>Holati:</b> <b>{esc(st)}</b>"
-            )
-        else:
-            t = "Faol buyurtma yo'q."
-    await c.message.edit_text(t, reply_markup=back)
-    await c.answer()
-
-@dp.message_handler(commands=["stat"], state="*")
-async def boss_stat(m: types.Message):
-    if m.from_user.id != BOSS_ID:
-        return
-    tot, sm = cur.execute("SELECT COUNT(*), COALESCE(SUM(final_price),0) FROM orders").fetchone()
-    dn = cur.execute("SELECT COUNT(*) FROM orders WHERE status='Topshirildi'").fetchone()[0]
-    av, rc = cur.execute("SELECT AVG(rating), COUNT(rating) FROM orders WHERE rating>0").fetchone()
-    baho_str = f"{av:.1f}/5 ({rc} ta)" if av else "Yo'q"
-    await m.answer(
-        f"📊 <b>STATISTIKA</b>\n"
-        f"📦 Jami: {tot} ta | ✅ Topshirildi: {dn} ta\n"
-        f"💰 Chegirmali tushum: {sm:,} so'm\n"
-        f"⭐ O'rtacha baho: {baho_str}".replace(",", " ")
-    )
-
-@dp.callback_query_handler(lambda c: c.data == "m_furn", state="*")
-async def cb_furn(c: types.CallbackQuery, state: FSMContext):
-    await state.finish()
-    async with state.proxy() as d:
-        d["disc"], d["q"], d["lbls"], d["det"], d["raw"], d["unp"] = 5, ["furn"], ["🪑 Yumshoq mebel"], [], 0, True
-    await Ord.furn.set()
-    await c.message.answer("📸 <b>Mebelingiz rasmini yuboring</b> — operatorimiz narxini kelishadi:\n📞 <b>(88) 263 63 63</b>")
-    await c.answer()
-
-SRVS = [
-    ("carpet", "🧶 Gilam (15 000/kv.m)"),
-    ("blanket", "🛏 Adyol"),
-    ("korpacha", "🛋 Ko'rpacha (50 000)"),
-    ("quilt", "🛌 Ko'rpa (70 000)"),
-    ("curtain", "🪟 Parda"),
-    ("furn", "🪑 Yumshoq mebel"),
-]
-
-def srvs_kb(sel):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    for k, v in SRVS:
-        kb.add(types.InlineKeyboardButton(("✅ " if k in sel else "➕ ") + v, callback_data=f"s_{k}"))
-    if sel:
-        kb.add(types.InlineKeyboardButton("➡️ Davom etish", callback_data="s_done"))
-    return kb.add(types.InlineKeyboardButton("❌ Bekor qilish", callback_data="m_home"))
-
-@dp.message_handler(commands=["buyurtma"], state="*")
-@dp.callback_query_handler(lambda c: c.data == "m_order", state="*")
-async def start_ord(ev, state: FSMContext):
-    await state.finish()
-    uid = ev.from_user.id
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    if has_180(uid):
-        kb.add(types.InlineKeyboardButton("🎉 6 oylik 10% chegirma", callback_data="t_10"))
-    else:
-        kb.add(types.InlineKeyboardButton("👤 Oddiy (5% — Kombo 2× da 10%)", callback_data="t_5"))
-        kb.add(types.InlineKeyboardButton("🏘 «Qo'shnilar» tarifi (10%)", callback_data="t_10"))
-    kb.add(types.InlineKeyboardButton("❌ Bekor qilish", callback_data="m_home"))
-    await Ord.tariff.set()
-    if isinstance(ev, types.CallbackQuery):
-        await ev.message.edit_text("🧺 <b>Tarifni tanlang:</b>", reply_markup=kb)
-        await ev.answer()
-    else:
-        await ev.answer("🧺 <b>Tarifni tanlang:</b>", reply_markup=kb)
-
-@dp.callback_query_handler(lambda c: c.data.startswith("t_"), state=Ord.tariff)
-async def pr_tar(c: types.CallbackQuery, state: FSMContext):
-    async with state.proxy() as d:
-        d["bdisc"], d["sel"] = (10 if c.data == "t_10" else 5), []
-    await Ord.srvs.set()
-    await c.message.edit_text("🧼 <b>Xizmatlarni tanlang (2+ xizmat = 🔥 Kombo 2× 10%):</b>", reply_markup=srvs_kb([]))
-    await c.answer()
-
-async def next_step(ev, state: FSMContext):
-    msg = ev.message if isinstance(ev, types.CallbackQuery) else ev
-    async with state.proxy() as d:
-        q = d.get("q", [])
-        if not q:
-            raw, disc, unp = d.get("raw", 0), d.get("disc", 5), d.get("unp", False)
-            d["fp"] = int(raw * (100 - disc) / 100) if raw > 0 else 0
-            kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True).add(
-                types.KeyboardButton("📱 Telefon raqamni yuborish", request_contact=True)
-            )
-            await Ord.phone.set()
-            det_txt = "\n".join(esc(x) for x in d.get("det", []))
-            return await msg.answer(
-                f"🧾 <b>Tafsilotlar:</b>\n{det_txt}\n\n{price_blk(raw, disc, unp)}\n\n📞 <b>Telefon raqamingizni yuboring:</b>",
-                reply_markup=kb,
-            )
-        nxt = q.pop(0)
-        d["q"] = q
-    if nxt == "carpet":
-        await Ord.carpet.set()
-        await msg.answer("📐 Gilam o'lchamini yozing (Masalan: <code>2x5</code> yoki <code>2x5 + 3x4</code>):", reply_markup=types.ReplyKeyboardRemove())
-    elif nxt == "blanket":
-        kb = types.InlineKeyboardMarkup(row_width=1).add(
-            types.InlineKeyboardButton("🛏 1 kishilik (60 000 so'm)", callback_data="b_1"),
-            types.InlineKeyboardButton("🛏 2 kishilik (Kelishiladi)", callback_data="b_2"),
-        )
-        await Ord.blk_t.set()
-        await msg.answer("🛏 <b>Adyol turini tanlang:</b>", reply_markup=kb)
-    elif nxt == "korpacha":
-        await Ord.korp.set()
-        await msg.answer("🛋 <b>Nechta ko'rpacha?</b> (50 000 so'm/dona):", reply_markup=types.ReplyKeyboardRemove())
-    elif nxt == "quilt":
-        await Ord.quilt.set()
-        await msg.answer("🛌 <b>Nechta ko'rpa?</b> (70 000 so'm/dona):", reply_markup=types.ReplyKeyboardRemove())
-    elif nxt == "curtain":
-        kb = types.InlineKeyboardMarkup(row_width=1).add(
-            types.InlineKeyboardButton("🪟 O'zimiz yechib-ilib beramiz (40 000/kg)", callback_data="cu_1"),
-            types.InlineKeyboardButton("🧺 Oddiy yuvish (30 000/kg)", callback_data="cu_2"),
-        )
-        await Ord.curt.set()
-        await msg.answer("🪟 <b>Parda xizmatini tanlang:</b>", reply_markup=kb)
-    elif nxt == "furn":
-        await Ord.furn.set()
-        await msg.answer("📸 <b>Mebel rasmini yuboring</b> (Operator kelishadi):", reply_markup=types.ReplyKeyboardRemove())
-
-@dp.callback_query_handler(lambda c: c.data.startswith("s_"), state=Ord.srvs)
-async def pr_srvs(c: types.CallbackQuery, state: FSMContext):
-    k = c.data.split("_")[1]
-    mp = dict(SRVS)
-    async with state.proxy() as d:
-        sel = d.get("sel", [])
-        if k == "done":
-            if not sel:
-                return await c.answer("Xizmat tanlang!", show_alert=True)
-            komb = len(sel) >= 2
-            d["disc"] = 10 if komb else d["bdisc"]
-            d["komb"], d["lbls"], d["q"], d["det"], d["raw"], d["unp"] = komb, [mp[x] for x in sel], list(sel), [], 0, False
-            if komb:
-                await c.message.answer("🔥 <b>Kombo 2× faollashdi! (10% chegirma)</b>")
-            await c.answer()
-            return await next_step(c, state)
-        if k in sel:
-            sel.remove(k)
-        else:
-            sel.append(k)
-        d["sel"] = sel
-        await c.message.edit_text(f"🧼 <b>Tanlandi ({len(sel)} ta):</b>", reply_markup=srvs_kb(sel))
-        await c.answer()
-
-@dp.message_handler(state=Ord.carpet)
-async def pr_carp(m: types.Message, state: FSMContext):
-    ar, ts, fm = parse_area(m.text or "")
-    if ar <= 0:
-        return await m.reply("❌ Noto'g'ri o'lcham. Masalan: <code>2×5</code> deb yozing:")
-    async with state.proxy() as d:
-        d["carp_tot"] = round(d.get("carp_tot", 0.0) + ar, 2)
-        d.setdefault("carp_fms", []).append(fm)
-        tot = d["carp_tot"]
-        tot_s = int(tot) if tot.is_integer() else tot
-    kb = types.InlineKeyboardMarkup(row_width=1).add(
-        types.InlineKeyboardButton("➕ Yana gilam qo'shish", callback_data="ord_cmore"),
-        types.InlineKeyboardButton("➡️ Tayyor (Davom etish)", callback_data="ord_cdone"),
-    )
-    await m.answer(
-        f"✅ <b>Qo'shildi:</b> {esc(fm)}\n📐 <b>Jami gilam:</b> <b>{tot_s} kv.m</b>\n\nYana gilam qo'shasizmi?",
-        reply_markup=kb,
-    )
-
-@dp.callback_query_handler(lambda c: c.data in ("ord_cmore", "ord_cdone"), state=Ord.carpet)
-async def cb_ord_carp(c: types.CallbackQuery, state: FSMContext):
-    if c.data == "ord_cmore":
-        await c.message.edit_text("📐 <b>Keyingi gilam o'lchamini yozing</b> (Masalan: <code>3×4</code>):")
-        return await c.answer()
-    async with state.proxy() as d:
-        tot = d.get("carp_tot", 0.0)
-        tot_s = int(tot) if tot.is_integer() else tot
-        fm_all = " + ".join(d.get("carp_fms", []))
-        p = int(tot * 15000)
-        d["raw"] += p
-        d["det"].append(f"🧶 Gilam: {fm_all} | {tot_s}×15 000 = {p:,} so'm".replace(",", " "))
-        d["carp_tot"], d["carp_fms"] = 0.0, []
-    await c.answer()
-    await next_step(c, state)
-
-@dp.callback_query_handler(lambda c: c.data.startswith("b_"), state=Ord.blk_t)
-async def pr_blkt(c: types.CallbackQuery, state: FSMContext):
-    async with state.proxy() as d:
-        d["bt"] = c.data.split("_")[1]
-    await Ord.blk_c.set()
-    await c.message.edit_text("🛏 <b>Nechta adyol?</b> (Raqam yozing):")
-    await c.answer()
-
-@dp.message_handler(state=Ord.blk_c)
-async def pr_blkc(m: types.Message, state: FSMContext):
-    ns = re.findall(r"\d+", m.text or "")
-    if not ns or int(ns[0]) <= 0:
-        return await m.reply("❌ Sonini yozing:")
-    n = int(ns[0])
-    async with state.proxy() as d:
-        if d.get("bt") == "1":
-            p = n * 60000
-            d["raw"] += p
-            d["det"].append(f"🛏 Adyol (1 kishilik): {n}×60 000 = {p:,} so'm".replace(",", " "))
-        else:
-            d["unp"] = True
-            d["det"].append(f"🛏 Adyol (2 kishilik): {n} dona (Kelishiladi)")
-    await next_step(m, state)
-
-@dp.message_handler(state=Ord.korp)
-async def pr_korp(m: types.Message, state: FSMContext):
-    ns = re.findall(r"\d+", m.text or "")
-    if not ns or int(ns[0]) <= 0:
-        return await m.reply("❌ Sonini yozing:")
-    n = int(ns[0])
-    p = n * 50000
-    async with state.proxy() as d:
-        d["raw"] += p
-        d["det"].append(f"🛋 Ko'rpacha: {n}×50 000 = {p:,} so'm".replace(",", " "))
-    await next_step(m, state)
-
-@dp.message_handler(state=Ord.quilt)
-async def pr_quilt(m: types.Message, state: FSMContext):
-    ns = re.findall(r"\d+", m.text or "")
-    if not ns or int(ns[0]) <= 0:
-        return await m.reply("❌ Sonini yozing:")
-    n = int(ns[0])
-    p = n * 70000
-    async with state.proxy() as d:
-        d["raw"] += p
-        d["det"].append(f"🛌 Ko'rpa: {n}×70 000 = {p:,} so'm".replace(",", " "))
-    await next_step(m, state)
-
-@dp.callback_query_handler(lambda c: c.data.startswith("cu_"), state=Ord.curt)
-async def pr_curt(c: types.CallbackQuery, state: FSMContext):
-    async with state.proxy() as d:
-        d["unp"] = True
-        d["det"].append(
-            "🪟 Parda: ⚠️ O'zimiz YECHIB, yuvib, ILIB BERAMIZ (40 000/kg)"
-            if c.data == "cu_1"
-            else "🪟 Parda: Oddiy yuvish (30 000/kg)"
-        )
-    await c.answer()
-    await next_step(c, state)
-
-@dp.message_handler(content_types=types.ContentType.PHOTO, state=Ord.furn)
-async def pr_furn(m: types.Message, state: FSMContext):
-    async with state.proxy() as d:
-        d["photo"] = m.photo[-1].file_id
-        d["unp"] = True
-        d["det"].append("🪑 Mebel: Rasmi yuborildi (Kelishiladi)")
-    await next_step(m, state)
-
-@dp.message_handler(content_types=[types.ContentType.CONTACT, types.ContentType.TEXT], state=Ord.phone)
-async def pr_phone(m: types.Message, state: FSMContext):
-    async with state.proxy() as d:
-        d["phone"] = m.contact.phone_number if m.contact else m.text
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True).add(
-        types.KeyboardButton("📍 Joylashuvni yuborish (GPS)", request_location=True)
-    )
-    await Ord.loc.set()
-    await m.answer("📍 <b>GPS lokatsiyangizni yuboring:</b>", reply_markup=kb)
-
-@dp.message_handler(content_types=types.ContentType.LOCATION, state=Ord.loc)
-async def pr_loc(m: types.Message, state: FSMContext):
-    async with state.proxy() as d:
-        d["lat"], d["lon"] = m.location.latitude, m.location.longitude
-    await Ord.orientir.set()
-    await m.answer("🏠 <b>Orientir va uy/xonadon raqamini yozing:</b>", reply_markup=types.ReplyKeyboardRemove())
-
-@dp.message_handler(state=Ord.orientir)
-async def pr_ori(m: types.Message, state: FSMContext):
-    if not m.text:
-        return await m.reply("Matn yozing:")
-    async with state.proxy() as d:
-        srv = ", ".join(d.get("lbls", [])) + (" (🔥 Kombo 2×)" if d.get("komb") else "")
-        det = "\n".join(d.get("det", []))
-        cur.execute(
-            """INSERT INTO orders
-            (user_id,full_name,phone,service,details,total_price,discount_percent,final_price,lat,lon,orientir,status)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                m.from_user.id,
-                m.from_user.full_name,
-                d.get("phone", ""),
-                srv,
-                det,
-                d.get("raw", 0),
-                d.get("disc", 5),
-                d.get("fp", 0),
-                d.get("lat"),
-                d.get("lon"),
-                m.text,
-                "Operator kutilmoqda",
-            ),
-        )
-        conn.commit()
-        oid = cur.lastrowid
-        pb = price_blk(d.get("raw", 0), d.get("disc", 5), d.get("unp", False))
-        await m.answer(
-            f"🎉 <b>Buyurtma #{oid} qabul qilindi!</b>\n\n"
-            f"🧼 {esc(srv)}\n{esc(det)}\n\n{pb}\n"
-            f"📍 <b>Orientir:</b> {esc(m.text)}\n\n"
-            f"Hurmat bilan, <b>Amin Cleaning</b> jamoasi ✨\n"
-            f"📞 Operator: (88) 263 63 63 | 🚚 Kuryer: (88) 577 63 63",
-            reply_markup=main_kb(),
-        )
-        op_t = (
-            f"🆕 <b>BUYURTMA #{oid}</b>\n"
-            f"👤 {esc(m.from_user.full_name)} ({esc(d.get('phone', ''))})\n"
-            f"🧼 {esc(srv)}\n{esc(det)}\n\n{pb}\n"
-            f"🏠 <b>Orientir:</b> {esc(m.text)}"
-        )
-        kb = types.InlineKeyboardMarkup().add(
-            types.InlineKeyboardButton("✅ Tasdiqlash (Kuryerga)", callback_data=f"op_{oid}")
-        )
-        try:
-            if d.get("photo"):
-                await bot.send_photo(OPERATOR_ID, d["photo"], caption=op_t, reply_markup=kb)
-            else:
-                await bot.send_message(OPERATOR_ID, op_t, reply_markup=kb)
-            if d.get("lat") is not None and d.get("lon") is not None:
-                await bot.send_location(OPERATOR_ID, d["lat"], d["lon"])
-        except TelegramAPIError as e:
-            logger.error("Operatorga yuborishda xato: %s", e)
-    await state.finish()
-
-@dp.callback_query_handler(lambda c: c.data.startswith(("op_", "cp_", "wr_", "cd_", "rt_")))
-async def workflow(c: types.CallbackQuery):
-    ps = c.data.split("_")
-    act, oid = ps[0], int(ps[1])
-    o = cur.execute(
-        "SELECT user_id,full_name,phone,service,details,total_price,discount_percent,final_price,lat,lon,orientir FROM orders WHERE id=?",
-        (oid,),
-    ).fetchone()
-    if not o:
-        return await c.answer("Buyurtma topilmadi", show_alert=True)
-    uid, fn, ph, srv, det, raw, disc, fp, lat, lon, ori = o
-    pb = price_blk(raw or 0, disc or 0, (fp or 0) == 0)
-
-    try:
-        if act == "op":
-            cur.execute("UPDATE orders SET status='Kuryerda' WHERE id=?", (oid,))
-            conn.commit()
-            if c.message.caption:
-                await c.message.edit_caption(c.message.caption + "\n✅ Tasdiqlandi")
-            else:
-                await c.message.edit_text(c.message.text + "\n✅ Tasdiqlandi")
-            kb = types.InlineKeyboardMarkup().add(
-                types.InlineKeyboardButton("📦 Qabul qildim (Sexga)", callback_data=f"cp_{oid}")
-            )
-            await bot.send_message(
-                COURIER_ID,
-                f"🚚 <b>OLIB KETISH #{oid}</b>\n👤 {esc(fn)} ({esc(ph)})\n🧼 {esc(srv)}\n{esc(det)}\n\n{pb}\n🏠 {esc(ori)}",
-                reply_markup=kb,
-            )
-            if lat is not None and lon is not None:
-                await bot.send_location(COURIER_ID, lat, lon)
-
-        elif act == "cp":
-            cur.execute("UPDATE orders SET status='🧼 Buyurtmangiz yuvilmoqda' WHERE id=?", (oid,))
-            conn.commit()
-            await c.message.edit_text(c.message.text + "\n📦 Sexga topshirildi")
-            kb = types.InlineKeyboardMarkup().add(
-                types.InlineKeyboardButton("✨ Tayyor", callback_data=f"wr_{oid}")
-            )
-            await bot.send_message(
-                WORKERS_GROUP_ID,
-                f"🧼 <b>SEXGA KELDI #{oid}</b>\n🔹 {esc(srv)}\n{esc(det)}\n\n{pb}\n🏠 {esc(ori)}",
-                reply_markup=kb,
-            )
-
-        elif act == "wr":
-            cur.execute("UPDATE orders SET status='✨ Tayyor' WHERE id=?", (oid,))
-            conn.commit()
-            await c.message.edit_text(c.message.text + "\n✨ TAYYOR")
-            await bot.send_message(
-                uid,
-                f"🎉 <b>Xushxabar, {esc(fn)}!</b> <b>#{oid}</b>-buyurtmangiz <b>TAYYOR BO'LDI</b>! ✨\n"
-                f"🚚 Kuryer: (88) 577 63 63\nHurmat bilan, <b>Amin Cleaning</b> jamoasi ✨",
-            )
-            kb = types.InlineKeyboardMarkup().add(
-                types.InlineKeyboardButton("✅ Topshirildi", callback_data=f"cd_{oid}")
-            )
-            await bot.send_message(
-                COURIER_ID,
-                f"✨ <b>TAYYOR — ELTIB BERING #{oid}</b>\n👤 {esc(fn)} ({esc(ph)})\n{pb}\n🏠 {esc(ori)}",
-                reply_markup=kb,
-            )
-            if lat is not None and lon is not None:
-                await bot.send_location(COURIER_ID, lat, lon)
-
-        elif act == "cd":
-            cur.execute(
-                "UPDATE orders SET status='Topshirildi', delivered_at=? WHERE id=?",
-                (datetime.now(UZ_TZ).isoformat(), oid),
-            )
-            conn.commit()
-            await c.message.edit_text(c.message.text + "\n✅ Topshirildi")
-            await bot.send_message(
-                BOSS_ID,
-                f"✅ <b>TOPSHIRILDI #{oid}</b>\n👤 {esc(fn)} ({esc(ph)})\n🧼 {esc(srv)}\n{esc(det)}\n\n{pb}",
-            )
-            rkb = types.InlineKeyboardMarkup(row_width=5).add(
-                *[types.InlineKeyboardButton(f"{i}⭐", callback_data=f"rt_{oid}_{i}") for i in range(1, 6)]
-            )
-            await bot.send_message(
-                uid,
-                f"🙏 Rahmat, <b>{esc(fn)}</b>! <b>#{oid}</b>-buyurtma sifatini baholang:",
-                reply_markup=rkb,
-            )
-
-        elif act == "rt":
-            st = int(ps[2])
-            cur.execute("UPDATE orders SET rating=? WHERE id=?", (st, oid))
-            conn.commit()
-            await c.message.edit_text(
-                f"🎉 <b>{st} ⭐ baho uchun rahmat!</b> Hurmat bilan, <b>Amin Cleaning</b> jamoasi ✨",
-                reply_markup=main_kb(),
-            )
-            await bot.send_message(
-                BOSS_ID,
-                f"{'⚠️ PAST BAHO!' if st <= 3 else '📊 DARAJA HISOBOTI'} <b>#{oid}</b>\n"
-                f"👤 {esc(fn)} ({esc(ph)})\n🧼 {esc(srv)}\n{pb}\n"
-                f"🌟 <b>Daraja:</b> <b>{st}/5</b> {'⭐'*st}",
-            )
-    except TelegramAPIError as e:
-        logger.error("Workflow Telegram xatosi (%s): %s", act, e)
-        await c.answer("Xabar yuborishda ID yoki guruh sozlamasini tekshiring!", show_alert=True)
-        return
-
-    await c.answer()
-
-async def sched_11_11():
-    sent = ""
-    while True:
-        try:
-            now = datetime.now(UZ_TZ)
-            td = now.strftime("%Y-%m-%d")
-            if now.hour == 11 and now.minute == 11 and sent != td:
-                sent = td
-                rows = cur.execute(
-                    "SELECT id,user_id,delivered_at FROM orders WHERE status='Topshirildi' AND delivered_at IS NOT NULL"
-                ).fetchall()
-                for oid, uid, ds in rows:
-                    if cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND id>?", (uid, oid)).fetchone()[0] > 0:
-                        continue
-                    days = (now.date() - datetime.fromisoformat(ds).date()).days
-                    m = None
-                    if days == 180:
-                        m = "Assalomu alaykum, hurmatli mijoz! Gilamlaringiz yuvilganiga 6 oy bo'ldi. <b>5 kun ichida</b> buyurtma bersangiz <b>10% chegirma</b>! Hurmat bilan, <b>Amin Cleaning</b> jamoasi ✨"
-                    elif days in (181, 182, 183, 184):
-                        m = f"Assalomu alaykum, hurmatli mijoz! Maxsus <b>10% chegirmangiz</b> tugashiga <b>{185-days} kun</b> qoldi! Hurmat bilan, <b>Amin Cleaning</b> jamoasi ✨"
-                    elif days == 186:
-                        m = "Assalomu alaykum, qadrli mijozimiz! Siz uchun <b>10% chegirmangizni yana 1 kunga uzaytirib berdik</b>! Hurmat bilan, <b>Amin Cleaning</b> jamoasi ✨"
-                    if m:
-                        try:
-                            await bot.send_message(uid, m, reply_markup=main_kb())
-                        except Exception:
-                            pass
-        except Exception as e:
-            logger.exception("Scheduler xatosi: %s", e)
-        await asyncio.sleep(25)
-
-async def on_start(dispatcher):
-    asyncio.create_task(sched_11_11())
-
-if __name__ == "__main__":
-    keep_alive()
-    executor.start_polling(dp, skip_updates=True, on_startup=on_start)
+            "3️⃣ <b>🏘 Qo'shnilar tarifi:</b> <b>1
