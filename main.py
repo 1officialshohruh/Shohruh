@@ -18,7 +18,7 @@ BOSS_ID = int(os.getenv("BOSS_ID", "2146334166"))
 OPERATOR_ID = int(os.getenv("OPERATOR_ID", "2146334166"))
 COURIER_ID = int(os.getenv("COURIER_ID", "2146334166"))
 # Diqqat: Telegram superguruh ID odatda -100... bilan boshlanadi
-WORKERS_GROUP_ID = int(os.getenv("WORKERS_GROUP_ID", "-2146334166"))
+WORKERS_GROUP_ID = int(os.getenv("WORKERS_GROUP_ID", "-1003205663486"))
 
 UZ_TZ = timezone(timedelta(hours=5))
 logging.basicConfig(level=logging.INFO)
